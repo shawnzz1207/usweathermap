@@ -92,8 +92,8 @@ def get_all_weather_data():
             return {"Name": name, "Lat": coords[0], "Lon": coords[1], "Temperature (°C)": None, "Type": loc_type}
 
     results = []
-    tasks = [(name, coords, "State") for name, coords in state_coords.items()] + \[(name, coords, "City") for
-                                                                                   name, coords in city_coords.items()]
+    tasks = [(name, coords, "State") for name, coords in state_coords.items()] + [(name, coords, "City") for
+                                                                                  name, coords in city_coords.items()]
 
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures = [executor.submit(fetch_weather, t[0], t[1], t[2]) for t in tasks]
