@@ -7,40 +7,36 @@ from concurrent.futures import ThreadPoolExecutor
 # 【网页基础设置】
 st.set_page_config(page_title="全美实时气候热力图", page_icon="🗺️", layout="wide")
 
-st.title("🗺️ 全美实时气候热力图")
-st.markdown("**数据来源**:[Open-Meteo 实时气象预报API](https://open-meteo.com) | **实时获取全美50州气温**")
+st.title("🗺️ 全美实时气候热力图 (支持滚轮缩放与城市测温)")
+st.markdown(
+    "**数据来源**:[Open-Meteo 实时气象预报](https://open-meteo.com) | **提示：请将鼠标放在地图上，使用滚轮放大查看城市细节**")
 
 # ==========================
-# 🎨 新增：侧边栏自定义温度区间
+# 🎨 侧边栏自定义温度区间
 # ==========================
 st.sidebar.header("🎨 自定义温度色带")
-st.sidebar.markdown("请拖动滑块，设定不同颜色代表的**摄氏度(℃)**：")
+st.sidebar.markdown("拖动滑块，设定颜色代表的**摄氏度(℃)**：")
 
-# 提供5个滑块供用户自定义，并设置合理的默认值和调节范围
 t1 = st.sidebar.slider("🔵 深蓝色 (极寒下限)", min_value=-40, max_value=0, value=-10)
 t2 = st.sidebar.slider("🟦 浅蓝色 (寒冷)", min_value=-20, max_value=15, value=0)
 t3 = st.sidebar.slider("🟨 浅黄色 (适宜)", min_value=-10, max_value=25, value=10)
 t4 = st.sidebar.slider("🟧 橙红色 (温暖)", min_value=0, max_value=35, value=20)
 t5 = st.sidebar.slider("🔴 深红色 (酷热上限)", min_value=15, max_value=50, value=30)
 
-# 为了防止用户错误设置导致程序崩溃（比如把浅蓝设置得比深蓝还低），我们在后台自动为温度排序
 temps = sorted([t1, t2, t3, t4, t5])
 min_t, max_t = temps[0], temps[4]
-
-# 避免最大值和最小值相等导致除以 0 的错误
 if max_t == min_t:
     max_t = min_t + 1
 
-# 核心算法：将真实的温度转化为 Plotly 能够识别的 0.0 ~ 1.0 比例
-dynamic_color_scale = [[0.0, "darkblue"],  # 强制对应 min_t
-                       [(temps[1] - min_t) / (max_t - min_t), "dodgerblue"],  # 按比例换算浅蓝位置
-                       [(temps[2] - min_t) / (max_t - min_t), "lightyellow"],  # 按比例换算浅黄位置
+dynamic_color_scale = [[0.0, "darkblue"],
+                       [(temps[1] - min_t) / (max_t - min_t), "dodgerblue"],
+                       [(temps[2] - min_t) / (max_t - min_t), "lightyellow"],
                        [(temps[3] - min_t) / (max_t - min_t), "tomato"],
-                       # 按比例换算橙红位置[1.0, "darkred"]                                        # 强制对应 max_t
+                       [1.0, "darkred"]
                        ]
 
 # ==========================
-# 🌍 数据拉取与缓存处理
+# 🌍 数据字典 (新增20个美国主要大城市)
 # ==========================
 state_coords = {
     'AL': [32.8066, -86.7911], 'AK': [61.3707, -152.4044], 'AZ': [33.7298, -111.4312],
@@ -62,51 +58,117 @@ state_coords = {
     'WI': [44.2685, -89.6165], 'WY': [42.7560, -107.3025]
 }
 
+city_coords = {
+    'New York': [40.7128, -74.0060], 'Los Angeles': [34.0522, -118.2437],
+    'Chicago': [41.8781, -87.6298], 'Houston': [29.7604, -95.3698],
+    'Phoenix': [33.4484, -112.0740], 'Philadelphia': [39.9526, -75.1652],
+    'San Antonio': [29.4241, -98.4936], 'San Diego': [32.7157, -117.1611],
+    'Dallas': [32.7767, -96.7970], 'San Jose': [37.3382, -121.8863],
+    'Austin': [30.2672, -97.7431], 'Seattle': [47.6062, -122.3321],
+    'Denver': [39.7392, -104.9903], 'Washington DC': [38.9072, -77.0369],
+    'Boston': [42.3601, -71.0589], 'Las Vegas': [36.1699, -115.1398],
+    'Miami': [25.7617, -80.1918], 'Atlanta': [33.7490, -84.3880],
+    'Honolulu': [21.3069, -157.8583], 'Anchorage': [61.2181, -149.9003]
+}
 
+
+# ==========================
+# 📡 异步拉取数据 (州 + 城市)
+# ==========================
 @st.cache_data(ttl=600)
-def get_weather_data():
-    def fetch_weather(state, coords):
+def get_all_weather_data():
+    def fetch_weather(name, coords, loc_type):
         url = f"https://api.open-meteo.com/v1/forecast?latitude={coords[0]}&longitude={coords[1]}&current_weather=true"
         try:
             res = requests.get(url, timeout=5).json()
             temp = res.get("current_weather", {}).get("temperature", None)
-            return {"State": state, "Temperature (°C)": temp}
+            return {"Name": name, "Lat": coords[0], "Lon": coords[1], "Temperature (°C)": temp, "Type": loc_type}
         except Exception:
-            return {"State": state, "Temperature (°C)": None}
+            return {"Name": name, "Lat": coords[0], "Lon": coords[1], "Temperature (°C)": None, "Type": loc_type}
 
-    weather_data = []
-    with ThreadPoolExecutor(max_workers=10) as executor:
-        futures = [executor.submit(fetch_weather, state, coords) for state, coords in state_coords.items()]
+    results = []
+    # 合并拉取任务
+    tasks = [(name, coords, "State") for name, coords in state_coords.items()] + \
+            [(name, coords, "City") for name, coords in city_coords.items()]
+
+    with ThreadPoolExecutor(max_workers=15) as executor:
+        futures = [executor.submit(fetch_weather, t[0], t[1], t[2]) for t in tasks]
         for future in futures:
-            weather_data.append(future.result())
+            results.append(future.result())
 
-    df = pd.DataFrame(weather_data)
-    return df.dropna(subset=["Temperature (°C)"])
+    df = pd.DataFrame(results).dropna(subset=["Temperature (°C)"])
+    return df[df["Type"] == "State"], df[df["Type"] == "City"]
 
 
-with st.spinner('卫星正在接收全美气象数据，请稍候...'):
-    df = get_weather_data()
+with st.spinner('卫星正在接收全美气象数据，包含各州与主要城市，请稍候...'):
+    df_states, df_cities = get_all_weather_data()
 
 # ==========================
-# 📊 渲染热力图
+# 📊 渲染多图层高级地图
 # ==========================
-if not df.empty:
+if not df_states.empty:
+    # 🌟 第一层：底层热力底图 (给各个州上色)
     fig = px.choropleth(
-        df,
-        locations="State",
+        df_states,
+        locations="Name",
         locationmode="USA-states",
         color="Temperature (°C)",
         scope="usa",
-        color_continuous_scale=dynamic_color_scale,  # 载入刚才动态计算出来的色带配置
-        range_color=[min_t, max_t]  # 载入用户设置的下限和上限
+        color_continuous_scale=dynamic_color_scale,
+        range_color=[min_t, max_t],
+        hover_name="Name"
     )
 
-    # 增加图表高度，使其在宽屏下更美观
-    fig.update_layout(height=600, margin={"r": 0, "t": 0, "l": 0, "b": 0})
+    # 🌟 第二层：州名简称文本 (强行贴在每个州的中心)
+    fig.add_scattergeo(
+        locations=df_states["Name"],
+        locationmode="USA-states",
+        text=df_states["Name"],
+        mode="text",
+        textfont=dict(color="rgba(255, 255, 255, 0.7)", size=12, family="Arial Black"),  # 半透明白色粗体
+        hoverinfo="skip",  # 鼠标移上去不干扰热力图的提示
+        showlegend=False
+    )
 
-    st.plotly_chart(fig, use_container_width=True)
+    # 🌟 第三层：主要城市坐标点与气温 (放大后清晰可见)
+    # 给城市文本拼接好：城市名 + 温度
+    df_cities["City_Label"] = df_cities["Name"] + ": " + df_cities["Temperature (°C)"].astype(str) + "℃"
 
-    with st.expander("📝 查看或下载各州具体温度数据"):
-        st.dataframe(df.sort_values(by="Temperature (°C)", ascending=False), use_container_width=True)
+    fig.add_scattergeo(
+        lon=df_cities["Lon"],
+        lat=df_cities["Lat"],
+        text=df_cities["City_Label"],
+        mode="markers+text",
+        textposition="bottom center",  # 文字显示在圆点下方
+        marker=dict(size=7, color="black", line=dict(width=1.5, color="white")),  # 白边黑底的小圆点
+        textfont=dict(color="black", size=11, family="Arial Black"),
+        name="主要城市实时气温",
+        hoverinfo="text"
+    )
+
+    # 优化界面边距和鼠标拖拽模式
+    fig.update_layout(
+        height=650,
+        margin={"r": 0, "t": 0, "l": 0, "b": 0},
+        dragmode="zoom"  # 允许拖拽放大
+    )
+
+    # 【最关键的一步】：给 st.plotly_chart 传入 config，强制开启滚轮缩放功能
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={
+            'scrollZoom': True,  # 开启鼠标滚轮缩放
+            'displayModeBar': True  # 显示右上角工具栏（提供重置视角按钮）
+        }
+    )
+
+    with st.expander("📝 查看各州与城市详细气温报表"):
+        st.write("### 🇺🇸 各州气温")
+        st.dataframe(df_states.drop(columns=["Type"]).sort_values(by="Temperature (°C)", ascending=False),
+                     use_container_width=True)
+        st.write("### 🏙️ 主要城市气温")
+        st.dataframe(df_cities.drop(columns=["Type", "City_Label"]).sort_values(by="Temperature (°C)", ascending=False),
+                     use_container_width=True)
 else:
     st.error("数据获取失败，请检查网络。")
