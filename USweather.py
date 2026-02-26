@@ -9,12 +9,17 @@ st.set_page_config(page_title="全美实时气候热力图", page_icon="🗺️"
 
 st.title("🗺️ 全美实时气候热力图 (支持滚轮缩放与城市测温)")
 st.markdown(
-    "**数据来源**:[Open-Meteo 实时气象预报](https://open-meteo.com) | **提示：请将鼠标放在地图上，使用滚轮放大查看城市细节**")
+    "**数据来源**:[Open-Meteo 实时气象预报](https://open-meteo.com) | **提示：请将鼠标放在地图上，使用滚轮放大查看细节**")
 
 # ==========================
-# 🎨 侧边栏自定义温度区间
+# 🎨 侧边栏控制面板
 # ==========================
-st.sidebar.header("🎨 自定义温度色带")
+st.sidebar.header("🎨 控制面板")
+
+# 【更新需求2】：城市图层控制开关 (默认设为 False 关闭)
+show_cities = st.sidebar.toggle("🏙️ 叠加显示主要城市气温", value=False)
+st.sidebar.markdown("---")
+
 st.sidebar.markdown("拖动滑块，设定颜色代表的**摄氏度(℃)**：")
 
 t1 = st.sidebar.slider("🔵 深蓝色 (极寒下限)", min_value=-40, max_value=0, value=-10)
@@ -36,7 +41,7 @@ dynamic_color_scale = [[0.0, "darkblue"],
                        ]
 
 # ==========================
-# 🌍 数据字典 (新增20个美国主要大城市)
+# 🌍 数据字典 (50州 + 20大城市)
 # ==========================
 state_coords = {
     'AL': [32.8066, -86.7911], 'AK': [61.3707, -152.4044], 'AZ': [33.7298, -111.4312],
@@ -87,9 +92,8 @@ def get_all_weather_data():
             return {"Name": name, "Lat": coords[0], "Lon": coords[1], "Temperature (°C)": None, "Type": loc_type}
 
     results = []
-    # 合并拉取任务
-    tasks = [(name, coords, "State") for name, coords in state_coords.items()] + \
-            [(name, coords, "City") for name, coords in city_coords.items()]
+    tasks = [(name, coords, "State") for name, coords in state_coords.items()] + \[(name, coords, "City") for
+                                                                                   name, coords in city_coords.items()]
 
     with ThreadPoolExecutor(max_workers=15) as executor:
         futures = [executor.submit(fetch_weather, t[0], t[1], t[2]) for t in tasks]
@@ -125,41 +129,42 @@ if not df_states.empty:
         locationmode="USA-states",
         text=df_states["Name"],
         mode="text",
-        textfont=dict(color="rgba(255, 255, 255, 0.7)", size=12, family="Arial Black"),  # 半透明白色粗体
-        hoverinfo="skip",  # 鼠标移上去不干扰热力图的提示
+        textfont=dict(color="rgba(255, 255, 255, 0.7)", size=12, family="Arial Black"),
+        hoverinfo="skip",
         showlegend=False
     )
 
-    # 🌟 第三层：主要城市坐标点与气温 (放大后清晰可见)
-    # 给城市文本拼接好：城市名 + 温度
-    df_cities["City_Label"] = df_cities["Name"] + ": " + df_cities["Temperature (°C)"].astype(str) + "℃"
+    # 🌟 第三层：主要城市坐标点与气温 (受侧边栏开关控制)
+    if show_cities:
+        df_cities["City_Label"] = df_cities["Name"] + ": " + df_cities["Temperature (°C)"].astype(str) + "℃"
 
-    fig.add_scattergeo(
-        lon=df_cities["Lon"],
-        lat=df_cities["Lat"],
-        text=df_cities["City_Label"],
-        mode="markers+text",
-        textposition="bottom center",  # 文字显示在圆点下方
-        marker=dict(size=7, color="black", line=dict(width=1.5, color="white")),  # 白边黑底的小圆点
-        textfont=dict(color="black", size=11, family="Arial Black"),
-        name="主要城市实时气温",
-        hoverinfo="text"
-    )
+        fig.add_scattergeo(
+            lon=df_cities["Lon"],
+            lat=df_cities["Lat"],
+            text=df_cities["City_Label"],
+            mode="markers+text",
+            textposition="bottom center",
+            marker=dict(size=7, color="black", line=dict(width=1.5, color="white")),
+            textfont=dict(color="black", size=11, family="Arial Black"),
+            name="主要城市",
+            hoverinfo="text",
+            showlegend=False  # 【更新需求1】：隐藏右上角多余的文字图例
+        )
 
-    # 优化界面边距和鼠标拖拽模式
+    # 【更新需求1】：优化界面边距，把 t:0 改成 t:40 防止UI重叠
     fig.update_layout(
         height=650,
-        margin={"r": 0, "t": 0, "l": 0, "b": 0},
-        dragmode="zoom"  # 允许拖拽放大
+        margin={"r": 0, "t": 40, "l": 0, "b": 0},
+        dragmode="zoom"
     )
 
-    # 【最关键的一步】：给 st.plotly_chart 传入 config，强制开启滚轮缩放功能
+    # 给 st.plotly_chart 传入 config，强制开启滚轮缩放功能
     st.plotly_chart(
         fig,
         use_container_width=True,
         config={
-            'scrollZoom': True,  # 开启鼠标滚轮缩放
-            'displayModeBar': True  # 显示右上角工具栏（提供重置视角按钮）
+            'scrollZoom': True,
+            'displayModeBar': True
         }
     )
 
@@ -168,7 +173,9 @@ if not df_states.empty:
         st.dataframe(df_states.drop(columns=["Type"]).sort_values(by="Temperature (°C)", ascending=False),
                      use_container_width=True)
         st.write("### 🏙️ 主要城市气温")
-        st.dataframe(df_cities.drop(columns=["Type", "City_Label"]).sort_values(by="Temperature (°C)", ascending=False),
+        # 如果没有打开城市开关，表格依然可以提供城市数据供查阅
+        st.dataframe(df_cities.drop(columns=["Type", "City_Label"], errors='ignore').sort_values(by="Temperature (°C)",
+                                                                                                 ascending=False),
                      use_container_width=True)
 else:
     st.error("数据获取失败，请检查网络。")
